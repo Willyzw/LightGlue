@@ -182,3 +182,13 @@ def add_text(
 def save_plot(path, **kw):
     """Save the current figure without any white margin."""
     plt.savefig(path, bbox_inches="tight", pad_inches=0, **kw)
+
+
+import io
+def plot3():
+    with io.BytesIO() as buff:
+        plt.savefig(buff, format='raw')
+        buff.seek(0)
+        data = np.frombuffer(buff.getvalue(), dtype=np.uint8)
+    w, h = plt.gcf().canvas.get_width_height()
+    return data.reshape((int(h), int(w), -1))
