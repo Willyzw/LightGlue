@@ -191,4 +191,6 @@ def plot3():
         buff.seek(0)
         data = np.frombuffer(buff.getvalue(), dtype=np.uint8)
     w, h = plt.gcf().canvas.get_width_height()
-    return data.reshape((int(h), int(w), -1))
+    plt.close()
+    data =  data.reshape((int(h), int(w), -1))
+    return data  # remove alpha channel if present

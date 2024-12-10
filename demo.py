@@ -9,62 +9,61 @@ from lightglue.utils import rbd, numpy_image_to_torch
 from lightglue import viz2d
 
 N = 1024
-feature = 'sift'  # or 'disk', 'sift', 'aliked', 'doghardnet'
-if feature == 'superpoint':
-    # SuperPoint+LightGlue
-    extractor = SuperPoint(max_num_keypoints=N).eval()  # load the extractor
-elif feature == 'disk':
-    # or DISK+LightGlue, ALIKED+LightGlue or SIFT+LightGlue
-    extractor = DISK(max_num_keypoints=N).eval()  # load the extractor
-elif feature == 'aliked':
-    extractor = ALIKED(max_num_keypoints=N).eval()
-elif feature == 'sift':
-    extractor = SIFT(max_num_keypoints=N).eval()
+imgs = sorted(glob('/data/slammy/color/*.jpg'))[300::30]
 
-matcher = LightGlue(feature).eval()  # load the matcher
 
-imgs = sorted(glob('/data/slammy/color/*.jpg'))[::30]
+# Load the extractor and matcher
+extractors, matchers = {}, {}
+for feature in ['sift', 'superpoint', 'aliked']:
+    if feature == 'superpoint':
+        extractors[feature] = SuperPoint(max_num_keypoints=N).eval()  # load the extractor
+    elif feature == 'aliked':
+        extractors[feature] = ALIKED(max_num_keypoints=N).eval()
+    elif feature == 'sift':
+        extractors[feature] = SIFT(max_num_keypoints=N).eval()
+    matchers[feature] = LightGlue(feature).eval()  # load the matcher
 
-# Setup the blueprint
+
+
+# Setup the rerun viewer
 blueprint = rrb.Vertical(
-    rrb.Horizontal(
-        # rrb.Spatial3DView(name="3D", origin="/world"),
-        rrb.Spatial2DView(name="Camera", origin="/world/camera/image"),
-    ),
-    rrb.Horizontal(
-        rrb.Spatial2DView(name="Camera2", origin="/world/camera/image2"),
-    ),            
-    row_shares=[3,2],  # 3 "parts" in the first Horizontal, 2 in the second
-)
+    *[rrb.Horizontal(
+        rrb.Spatial2DView(name=f"features_{f}", origin=f"/world/camera/features_{f}"),
+        rrb.Spatial2DView(name=f"matches_{f}", origin=f"/world/camera/matches_{f}"))
+    for f in ['sift', 'superpoint', 'aliked']])
 rr.init("SLAM_lab", spawn=True, default_blueprint= blueprint)
 
-for img_id, img in tqdm(enumerate(imgs)):
+
+# Extract and match the features
+last_feats = {}
+for img_id, img in enumerate(tqdm(imgs)):
+    rr.set_time_sequence("time", img_id)
     curr_img_np = cv2.imread(img)
     curr_img_np = cv2.cvtColor(curr_img_np, cv2.COLOR_BGR2RGB)
     curr_img = numpy_image_to_torch(curr_img_np)
 
-    # extract the features
-    if img_id == 0:
-        last_img = curr_img
-        feats0r = extractor.extract(last_img)  # auto-resize the image, disable with resize=None
-        continue
-    feats1r = extractor.extract(curr_img)
+    for feature, extractor in extractors.items():
+        # extract the features
+        if img_id == 0:
+            last_img = curr_img
+            last_feats[feature] = extractors[feature].extract(last_img)  # auto-resize the image, disable with resize=None
+            continue
+        feats1r = extractor.extract(curr_img)
 
-    # match the features
-    matches01 = matcher({'image0': feats0r, 'image1': feats1r})
-    feats0, feats1, matches01 = [rbd(x) for x in [feats0r, feats1r, matches01]]  # remove batch dimension
-    kpts0, kpts1, matches = feats0["keypoints"], feats1["keypoints"], matches01["matches"]
+        # match the features
+        matches01 = matchers[feature]({'image0': last_feats[feature], 'image1': feats1r})
+        kpts0, kpts1, matches = last_feats[feature]["keypoints"].squeeze(), feats1r["keypoints"].squeeze(), matches01["matches"][0]
 
-    m_kpts0, m_kpts1 = kpts0[matches[..., 0]], kpts1[matches[..., 1]]
+        # plot the matches
+        kpc0, kpc1 = viz2d.cm_prune(matches01["prune0"].squeeze()), viz2d.cm_prune(matches01["prune1"].squeeze())
+        viz2d.plot_images([last_img, curr_img])
+        viz2d.plot_keypoints([kpts0, kpts1], colors=[kpc0, kpc1], ps=10)
+        rr.log(f"world/camera/features_{feature}", rr.Image(viz2d.plot3()).compress(jpeg_quality=85))
+    
+        viz2d.plot_images([last_img, curr_img])
+        viz2d.plot_matches(kpts0[matches[...,0]], kpts1[matches[...,1]], color="lime", lw=0.2)
+        rr.log(f"world/camera/matches_{feature}", rr.Image(viz2d.plot3()).compress(jpeg_quality=85))
 
-    axes = viz2d.plot_images([last_img, curr_img])
-    viz2d.plot_matches(m_kpts0, m_kpts1, color="lime", lw=0.2)
-    viz2d.add_text(0, f'Stop after {matches01["stop"]} layers', fs=20)
-    rr.log("world/camera/image", rr.Image(viz2d.plot3()).compress(jpeg_quality=85))
 
-    kpc0, kpc1 = viz2d.cm_prune(matches01["prune0"]), viz2d.cm_prune(matches01["prune1"])
-    viz2d.plot_images([last_img, curr_img])
-    viz2d.plot_keypoints([kpts0, kpts1], colors=[kpc0, kpc1], ps=10)
-    rr.log("world/camera/image2", rr.Image(viz2d.plot3()).compress(jpeg_quality=85))
-    feats0r = feats1r
+        last_feats[feature] = feats1r
     last_img = curr_img
